@@ -1,17 +1,19 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:geoflutterfire/src/models/DistanceDocSnapshot.dart';
 import 'package:geoflutterfire/src/point.dart';
-import 'util.dart';
 import 'package:rxdart/rxdart.dart';
-import 'dart:async';
+
+import 'models/DistanceDocSnapshot.dart';
+import 'util.dart';
 
 class GeoFireCollectionRef {
   Query _collectionReference;
   Stream<QuerySnapshot> _stream;
 
-  GeoFireCollectionRef(this._collectionReference)
-      : assert(_collectionReference != null) {
+  GeoFireCollectionRef(this._collectionReference) : assert(_collectionReference != null) {
     _stream = _createStream(_collectionReference).shareReplay(maxSize: 1);
   }
 
@@ -36,8 +38,7 @@ class GeoFireCollectionRef {
       CollectionReference colRef = _collectionReference;
       return colRef.add(data);
     } catch (e) {
-      throw Exception(
-          'cannot call add on Query, use collection reference instead');
+      throw Exception('cannot call add on Query, use collection reference instead');
     }
   }
 
@@ -47,8 +48,7 @@ class GeoFireCollectionRef {
       CollectionReference colRef = _collectionReference;
       return colRef.doc(id).delete();
     } catch (e) {
-      throw Exception(
-          'cannot call delete on Query, use collection reference instead');
+      throw Exception('cannot call delete on Query, use collection reference instead');
     }
   }
 
@@ -58,21 +58,18 @@ class GeoFireCollectionRef {
       CollectionReference colRef = _collectionReference;
       return colRef.doc(id).set(data, SetOptions(merge: merge));
     } catch (e) {
-      throw Exception(
-          'cannot call set on Query, use collection reference instead');
+      throw Exception('cannot call set on Query, use collection reference instead');
     }
   }
 
   /// set a geo point with [latitude] and [longitude] using [field] as the object key to the document with [id]
-  Future<void> setPoint(
-      String id, String field, double latitude, double longitude) {
+  Future<void> setPoint(String id, String field, double latitude, double longitude) {
     try {
       CollectionReference colRef = _collectionReference;
       var point = GeoFirePoint(latitude, longitude).data;
       return colRef.doc(id).set({'$field': point}, SetOptions(merge: true));
     } catch (e) {
-      throw Exception(
-          'cannot call set on Query, use collection reference instead');
+      throw Exception('cannot call set on Query, use collection reference instead');
     }
   }
 
@@ -84,6 +81,39 @@ class GeoFireCollectionRef {
     @required String field,
     bool strictMode = false,
   }) {
+    final Stream<List<DocumentSnapshot>> filtered = _within(
+      center: center,
+      radius: radius,
+      field: field,
+      withDistance: true,
+    );
+    return filtered.asBroadcastStream();
+  }
+
+  /// query firestore documents based on geographic [radius] from geoFirePoint [center]
+  /// [field] specifies the name of the key in the document
+  Stream<List<DistanceDocSnapshot>> withinWithDistance({
+    @required GeoFirePoint center,
+    @required double radius,
+    @required String field,
+    bool strictMode = false,
+  }) {
+    final Stream<List<DistanceDocSnapshot>> filtered = _within(
+      center: center,
+      radius: radius,
+      field: field,
+      withDistance: true,
+    );
+    return filtered.asBroadcastStream();
+  }
+
+  Stream<List<T>> _within<T>({
+    @required GeoFirePoint center,
+    @required double radius,
+    @required String field,
+    bool strictMode = false,
+    bool withDistance = false,
+  }) {
     final precision = Util.setPrecision(radius);
     final centerHash = center.hash.substring(0, precision);
     final area = GeoFirePoint.neighborsOf(hash: centerHash)..add(centerHash);
@@ -91,37 +121,30 @@ class GeoFireCollectionRef {
     Iterable<Stream<List<DistanceDocSnapshot>>> queries = area.map((hash) {
       final tempQuery = _queryPoint(hash, field);
       return _createStream(tempQuery).map((QuerySnapshot querySnapshot) {
-        return querySnapshot.docs
-            .map((element) => DistanceDocSnapshot(element, null))
-            .toList();
+        return querySnapshot.docs.map((element) => DistanceDocSnapshot(element, null)).toList();
       });
     });
 
-    Stream<List<DistanceDocSnapshot>> mergedObservable =
-        mergeObservable(queries);
+    Stream<List<DistanceDocSnapshot>> mergedObservable = mergeObservable(queries);
 
     var filtered = mergedObservable.map((List<DistanceDocSnapshot> list) {
       var mappedList = list.map((DistanceDocSnapshot distanceDocSnapshot) {
         // split and fetch geoPoint from the nested Map
         final fieldList = field.split('.');
-        var geoPointField =
-            distanceDocSnapshot.documentSnapshot.data()[fieldList[0]];
+        var geoPointField = distanceDocSnapshot.documentSnapshot.data()[fieldList[0]];
         if (fieldList.length > 1) {
           for (int i = 1; i < fieldList.length; i++) {
             geoPointField = geoPointField[fieldList[i]];
           }
         }
         final GeoPoint geoPoint = geoPointField['geopoint'];
-        distanceDocSnapshot.distance =
-            center.distance(lat: geoPoint.latitude, lng: geoPoint.longitude);
+        distanceDocSnapshot.distance = center.distance(lat: geoPoint.latitude, lng: geoPoint.longitude);
         return distanceDocSnapshot;
       });
 
       final filteredList = strictMode
           ? mappedList
-              .where((DistanceDocSnapshot doc) =>
-                      doc.distance <=
-                      radius * 1.02 // buffer for edge distances;
+              .where((DistanceDocSnapshot doc) => doc.distance <= radius * 1.02 // buffer for edge distances;
                   )
               .toList()
           : mappedList.toList();
@@ -131,15 +154,18 @@ class GeoFireCollectionRef {
         final val = (distA * 1000).toInt() - (distB * 1000).toInt();
         return val;
       });
-      return filteredList.map((element) => element.documentSnapshot).toList();
+      if (withDistance) {
+        return filteredList;
+      } else {
+        return filteredList.map((element) => element.documentSnapshot).toList();
+      }
     });
-    return filtered.asBroadcastStream();
+    return filtered;
   }
 
-  Stream<List<DistanceDocSnapshot>> mergeObservable(
-      Iterable<Stream<List<DistanceDocSnapshot>>> queries) {
-    Stream<List<DistanceDocSnapshot>> mergedObservable = Rx.combineLatest(
-        queries, (List<List<DistanceDocSnapshot>> originalList) {
+  Stream<List<DistanceDocSnapshot>> mergeObservable(Iterable<Stream<List<DistanceDocSnapshot>>> queries) {
+    Stream<List<DistanceDocSnapshot>> mergedObservable =
+        Rx.combineLatest(queries, (List<List<DistanceDocSnapshot>> originalList) {
       final reducedList = <DistanceDocSnapshot>[];
       originalList.forEach((t) {
         reducedList.addAll(t);
