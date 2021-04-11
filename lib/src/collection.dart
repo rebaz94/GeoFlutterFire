@@ -124,7 +124,7 @@ class GeoFireCollectionRef {
 
     Stream<List<DistanceDocSnapshot>> mergedObservable = mergeObservable(queries);
 
-    var filtered = mergedObservable.map((List<DistanceDocSnapshot> list) {
+    return mergedObservable.map<List<T>>((List<DistanceDocSnapshot> list) {
       var mappedList = list.map((DistanceDocSnapshot distanceDocSnapshot) {
         // split and fetch geoPoint from the nested Map
         final fieldList = field.split('.');
@@ -152,12 +152,11 @@ class GeoFireCollectionRef {
         return val;
       });
       if (withDistance) {
-        return filteredList;
+        return filteredList as List<T>;
       } else {
-        return filteredList.map((element) => element.documentSnapshot).toList();
+        return filteredList.map((element) => element.documentSnapshot).toList() as List<T>;
       }
     });
-    return filtered as Stream<List<T>>;
   }
 
   Stream<List<DistanceDocSnapshot>> mergeObservable(
